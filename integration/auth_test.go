@@ -15,13 +15,13 @@ func TestSignupLoginAndAuthenticate(t *testing.T) {
 	post(t, ts, "/signup", authapi.SignupRequest{
 		Email:    "Buyer@Example.com",
 		Password: "correct-password",
-	}, http.StatusCreated, &signupResp)
+	}, "", http.StatusCreated, &signupResp)
 
 	var loginResp authapi.LoginResponse
 	post(t, ts, "/login", authapi.LoginRequest{
 		Email:    "buyer@example.com",
 		Password: "correct-password",
-	}, http.StatusOK, &loginResp)
+	}, "", http.StatusOK, &loginResp)
 
 	if loginResp.Token == "" {
 		t.Fatal("expected token in login response")
@@ -33,7 +33,7 @@ func TestSignupLoginAndAuthenticate(t *testing.T) {
 	var authResp authapi.AuthenticateResponse
 	post(t, ts, "/authenticate", authapi.AuthenticateRequest{
 		Token: loginResp.Token,
-	}, http.StatusOK, &authResp)
+	}, "", http.StatusOK, &authResp)
 
 	if authResp.UserID != signupResp.UserID {
 		t.Fatalf("authenticated user id %q does not match signup user id %q", authResp.UserID, signupResp.UserID)
@@ -47,12 +47,12 @@ func TestLoginRejectsInvalidPassword(t *testing.T) {
 	post(t, ts, "/signup", authapi.SignupRequest{
 		Email:    "buyer@example.com",
 		Password: "correct-password",
-	}, http.StatusCreated, nil)
+	}, "", http.StatusCreated, nil)
 
 	post(t, ts, "/login", authapi.LoginRequest{
 		Email:    "buyer@example.com",
 		Password: "wrong-password",
-	}, http.StatusUnauthorized, nil)
+	}, "", http.StatusUnauthorized, nil)
 }
 
 func TestDuplicateSignupIsRejected(t *testing.T) {
@@ -62,12 +62,12 @@ func TestDuplicateSignupIsRejected(t *testing.T) {
 	post(t, ts, "/signup", authapi.SignupRequest{
 		Email:    "buyer@example.com",
 		Password: "correct-password",
-	}, http.StatusCreated, nil)
+	}, "", http.StatusCreated, nil)
 
 	post(t, ts, "/signup", authapi.SignupRequest{
 		Email:    " BUYER@example.com ",
 		Password: "another-password",
-	}, http.StatusConflict, nil)
+	}, "", http.StatusConflict, nil)
 }
 
 func TestAuthenticateRejectsInvalidToken(t *testing.T) {
@@ -76,5 +76,5 @@ func TestAuthenticateRejectsInvalidToken(t *testing.T) {
 
 	post(t, ts, "/authenticate", authapi.AuthenticateRequest{
 		Token: "not-a-real-token",
-	}, http.StatusUnauthorized, nil)
+	}, "", http.StatusUnauthorized, nil)
 }

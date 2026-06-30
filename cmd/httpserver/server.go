@@ -9,6 +9,8 @@ import (
 
 	"github.com/saiteja/ecommerce/auth"
 	authapi "github.com/saiteja/ecommerce/auth/api_models"
+	"github.com/saiteja/ecommerce/cart"
+	cartapi "github.com/saiteja/ecommerce/cart/api_models"
 	"github.com/saiteja/ecommerce/pkg/logger"
 	"github.com/saiteja/ecommerce/product"
 	productapi "github.com/saiteja/ecommerce/product/api_models"
@@ -18,6 +20,7 @@ import (
 type Server struct {
 	auth           *auth.Service
 	product        *product.Service
+	cart           *cart.Service
 	mux            *http.ServeMux
 	ProductStore   *productdao.InMemoryProductStore
 	InventoryStore *productdao.InMemoryInventoryStore
@@ -27,11 +30,12 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func New(authService *auth.Service, productService *product.Service, productStore *productdao.InMemoryProductStore, inventoryStore *productdao.InMemoryInventoryStore) *Server {
+func New(authService *auth.Service, productService *product.Service, cartService *cart.Service, productStore *productdao.InMemoryProductStore, inventoryStore *productdao.InMemoryInventoryStore) *Server {
 	logger.Init()
 	s := &Server{
 		auth:           authService,
 		product:        productService,
+		cart:           cartService,
 		mux:            http.NewServeMux(),
 		ProductStore:   productStore,
 		InventoryStore: inventoryStore,
@@ -43,6 +47,10 @@ func New(authService *auth.Service, productService *product.Service, productStor
 	s.mux.HandleFunc("GET /products", s.handleGetProducts)
 	s.mux.HandleFunc("GET /products/{id}", s.handleGetProductDetails)
 	s.mux.HandleFunc("GET /products/{id}/inventory", s.handleGetProductInventory)
+	s.mux.HandleFunc("POST /cart/items", s.handleAddToCart)
+	s.mux.HandleFunc("DELETE /cart/items/{productID}", s.handleRemoveFromCart)
+	s.mux.HandleFunc("PATCH /cart/items/{productID}", s.handleUpdateCartItem)
+	s.mux.HandleFunc("GET /cart", s.handleGetCartTotal)
 
 	return s
 }
@@ -168,6 +176,88 @@ func (s *Server) handleGetProducts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Server) handleAddToCart(w http.ResponseWriter, r *http.Request) {
+	userID, err := s.authenticate(r)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	var req cartapi.AddItemRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	req.UserID = userID
+
+	resp, err := s.cart.AddItem(r.Context(), &req)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleRemoveFromCart(w http.ResponseWriter, r *http.Request) {
+	userID, err := s.authenticate(r)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	resp, err := s.cart.RemoveItem(r.Context(), &cartapi.RemoveItemRequest{
+		UserID:    userID,
+		ProductID: r.PathValue("productID"),
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleUpdateCartItem(w http.ResponseWriter, r *http.Request) {
+	userID, err := s.authenticate(r)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	var req cartapi.UpdateQuantityRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	req.UserID = userID
+	req.ProductID = r.PathValue("productID")
+
+	resp, err := s.cart.UpdateQuantity(r.Context(), &req)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleGetCartTotal(w http.ResponseWriter, r *http.Request) {
+	userID, err := s.authenticate(r)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	resp, err := s.cart.GetTotal(r.Context(), &cartapi.GetCartTotalRequest{UserID: userID})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(dst)
@@ -198,7 +288,12 @@ func statusCodeForError(err error) (int, string) {
 		return http.StatusUnauthorized, err.Error()
 	case errors.Is(err, auth.ErrInvalidToken), errors.Is(err, auth.ErrSessionExpired):
 		return http.StatusUnauthorized, err.Error()
-	case errors.Is(err, product.ErrProductNotFound):
+	case errors.Is(err, cart.ErrInvalidQuantity):
+		return http.StatusBadRequest, err.Error()
+	case errors.Is(err, cart.ErrInsufficientStock):
+		return http.StatusUnprocessableEntity, err.Error()
+	case errors.Is(err, cart.ErrItemNotFound), errors.Is(err, cart.ErrProductNotFound),
+		errors.Is(err, product.ErrProductNotFound):
 		return http.StatusNotFound, err.Error()
 	default:
 		return http.StatusInternalServerError, "internal server error"
