@@ -10,6 +10,8 @@ import (
 	"github.com/saiteja/ecommerce/auth"
 	authapi "github.com/saiteja/ecommerce/auth/api_models"
 	authdao "github.com/saiteja/ecommerce/auth/dao"
+	"github.com/saiteja/ecommerce/cart"
+	cartdao "github.com/saiteja/ecommerce/cart/dao"
 	"github.com/saiteja/ecommerce/cmd/httpserver"
 	"github.com/saiteja/ecommerce/product"
 	productdao "github.com/saiteja/ecommerce/product/dao"
@@ -28,7 +30,8 @@ func startServer(t *testing.T) (*testServer, func()) {
 	sessionStore := authdao.NewInMemorySessionStore()
 	authService := auth.NewService(credentialsStore, sessionStore)
 	productService := product.NewService(productStore, inventoryStore)
-	appServer := httpserver.New(authService, productService, productStore, inventoryStore)
+	cartService := cart.NewService(cartdao.NewInMemoryCartStore(), productService)
+	appServer := httpserver.New(authService, productService, cartService, productStore, inventoryStore)
 	ts := &testServer{
 		Server: appServer,
 		HTTP:   httptest.NewServer(appServer),
@@ -38,9 +41,9 @@ func startServer(t *testing.T) (*testServer, func()) {
 
 func signupAndLogin(t *testing.T, ts *testServer, email, password string) string {
 	t.Helper()
-	post(t, ts, "/signup", authapi.SignupRequest{Email: email, Password: password}, http.StatusCreated, nil)
+	post(t, ts, "/signup", authapi.SignupRequest{Email: email, Password: password}, "", http.StatusCreated, nil)
 	var resp authapi.LoginResponse
-	post(t, ts, "/login", authapi.LoginRequest{Email: email, Password: password}, http.StatusOK, &resp)
+	post(t, ts, "/login", authapi.LoginRequest{Email: email, Password: password}, "", http.StatusOK, &resp)
 	return resp.Token
 }
 
@@ -49,24 +52,19 @@ func get(t *testing.T, ts *testServer, path, token string, wantStatus int, dst a
 	doRequest(t, http.MethodGet, ts, path, nil, token, wantStatus, dst)
 }
 
-func del(t *testing.T, ts *testServer, path, token string, wantStatus int) {
+func del(t *testing.T, ts *testServer, path, token string, wantStatus int, dst any) {
 	t.Helper()
-	doRequest(t, http.MethodDelete, ts, path, nil, token, wantStatus, nil)
+	doRequest(t, http.MethodDelete, ts, path, nil, token, wantStatus, dst)
 }
 
-func patch(t *testing.T, ts *testServer, path string, body any, token string, wantStatus int) {
+func patch(t *testing.T, ts *testServer, path string, body any, token string, wantStatus int, dst any) {
 	t.Helper()
-	doRequest(t, http.MethodPatch, ts, path, body, token, wantStatus, nil)
+	doRequest(t, http.MethodPatch, ts, path, body, token, wantStatus, dst)
 }
 
-func postAuth(t *testing.T, ts *testServer, path string, body any, token string, wantStatus int, dst any) {
+func post(t *testing.T, ts *testServer, path string, body any, token string, wantStatus int, dst any) {
 	t.Helper()
 	doRequest(t, http.MethodPost, ts, path, body, token, wantStatus, dst)
-}
-
-func post(t *testing.T, ts *testServer, path string, body any, wantStatus int, dst any) {
-	t.Helper()
-	doRequest(t, http.MethodPost, ts, path, body, "", wantStatus, dst)
 }
 
 func doRequest(t *testing.T, method string, ts *testServer, path string, body any, token string, wantStatus int, dst any) {

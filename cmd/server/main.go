@@ -5,6 +5,8 @@ import (
 
 	"github.com/saiteja/ecommerce/auth"
 	authdao "github.com/saiteja/ecommerce/auth/dao"
+	"github.com/saiteja/ecommerce/cart"
+	cartdao "github.com/saiteja/ecommerce/cart/dao"
 	"github.com/saiteja/ecommerce/cmd/httpserver"
 	"github.com/saiteja/ecommerce/pkg/logger"
 	"github.com/saiteja/ecommerce/product"
@@ -20,7 +22,10 @@ func main() {
 	inventoryStore := productdao.NewInMemoryInventoryStore()
 	productService := product.NewService(productStore, inventoryStore)
 
-	s := httpserver.New(authService, productService, productStore, inventoryStore)
+	cartStore := cartdao.NewInMemoryCartStore()
+	cartService := cart.NewService(cartStore, productService)
+
+	s := httpserver.New(authService, productService, cartService, productStore, inventoryStore)
 
 	logger.L.Info("server started", "addr", ":8080")
 	if err := http.ListenAndServe(":8080", s); err != nil {
