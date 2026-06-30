@@ -11,6 +11,7 @@ import (
 	authapi "github.com/saiteja/ecommerce/auth/api_models"
 	"github.com/saiteja/ecommerce/cart"
 	cartapi "github.com/saiteja/ecommerce/cart/api_models"
+	cartdao "github.com/saiteja/ecommerce/cart/dao"
 	"github.com/saiteja/ecommerce/pkg/logger"
 	"github.com/saiteja/ecommerce/product"
 	productapi "github.com/saiteja/ecommerce/product/api_models"
@@ -24,13 +25,14 @@ type Server struct {
 	mux            *http.ServeMux
 	ProductStore   *productdao.InMemoryProductStore
 	InventoryStore *productdao.InMemoryInventoryStore
+	CouponStore    *cartdao.InMemoryCouponStore
 }
 
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func New(authService *auth.Service, productService *product.Service, cartService *cart.Service, productStore *productdao.InMemoryProductStore, inventoryStore *productdao.InMemoryInventoryStore) *Server {
+func New(authService *auth.Service, productService *product.Service, cartService *cart.Service, productStore *productdao.InMemoryProductStore, inventoryStore *productdao.InMemoryInventoryStore, couponStore *cartdao.InMemoryCouponStore) *Server {
 	logger.Init()
 	s := &Server{
 		auth:           authService,
@@ -39,6 +41,7 @@ func New(authService *auth.Service, productService *product.Service, cartService
 		mux:            http.NewServeMux(),
 		ProductStore:   productStore,
 		InventoryStore: inventoryStore,
+		CouponStore:    couponStore,
 	}
 
 	s.mux.HandleFunc("POST /signup", s.handleSignup)
@@ -249,7 +252,10 @@ func (s *Server) handleGetCartTotal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.cart.GetTotal(r.Context(), &cartapi.GetCartTotalRequest{UserID: userID})
+	resp, err := s.cart.GetCartTotal(r.Context(), &cartapi.GetCartTotalRequest{
+		UserID:     userID,
+		CouponName: r.URL.Query().Get("coupon"),
+	})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -293,7 +299,7 @@ func statusCodeForError(err error) (int, string) {
 	case errors.Is(err, cart.ErrInsufficientStock):
 		return http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, cart.ErrItemNotFound), errors.Is(err, cart.ErrProductNotFound),
-		errors.Is(err, product.ErrProductNotFound):
+		errors.Is(err, cart.ErrCouponNotFound), errors.Is(err, product.ErrProductNotFound):
 		return http.StatusNotFound, err.Error()
 	default:
 		return http.StatusInternalServerError, "internal server error"

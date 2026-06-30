@@ -5,8 +5,10 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/govalues/decimal"
 	"github.com/govalues/money"
 	cartapi "github.com/saiteja/ecommerce/cart/api_models"
+	cartmodels "github.com/saiteja/ecommerce/cart/models"
 	productmodels "github.com/saiteja/ecommerce/product/models"
 )
 
@@ -147,14 +149,14 @@ func TestCartIsolatedBetweenUsers(t *testing.T) {
 	tokenA := signupAndLogin(t, ts, "user-a@example.com", "password-a")
 	post(t, ts, "/cart/items", cartapi.AddItemRequest{ProductID: productID, Quantity: 3}, tokenA, http.StatusOK, nil)
 
-	respA := &cartapi.CartTotalResponse{}
+	respA := &cartapi.GetCartTotalResponse{}
 	get(t, ts, "/cart", tokenA, http.StatusOK, respA)
 	if len(respA.GetItems()) != 1 || respA.GetItems()[0].GetQuantity() != 3 {
 		t.Fatalf("user A should have 1 item with qty 3, got %v", respA.GetItems())
 	}
 
 	tokenB := signupAndLogin(t, ts, "user-b@example.com", "password-b")
-	respB := &cartapi.CartTotalResponse{}
+	respB := &cartapi.GetCartTotalResponse{}
 	get(t, ts, "/cart", tokenB, http.StatusOK, respB)
 	if len(respB.GetItems()) != 0 {
 		t.Fatalf("user B should see an empty cart, got %d items", len(respB.GetItems()))
@@ -175,11 +177,85 @@ func TestGetCartTotalMoneyMath(t *testing.T) {
 	post(t, ts, "/cart/items", cartapi.AddItemRequest{ProductID: sanitizerID, Quantity: 1}, token, http.StatusOK, nil)
 	post(t, ts, "/cart/items", cartapi.AddItemRequest{ProductID: maskID,      Quantity: 1}, token, http.StatusOK, nil)
 
-	resp := &cartapi.CartTotalResponse{}
+	resp := &cartapi.GetCartTotalResponse{}
 	get(t, ts, "/cart", token, http.StatusOK, resp)
 
 	if resp.GetTotal() != "200.40" {
 		t.Fatalf("expected total %q, got %q", "200.40", resp.GetTotal())
+	}
+}
+
+func TestGetCartTotalWithCoupon(t *testing.T) {
+	ts, cleanup := startServer(t)
+	defer cleanup()
+
+	productID := seedProduct(t, ts, "Laptop", 10000, 10) // 100.00 each
+	token := signupAndLogin(t, ts, "buyer@example.com", "correct-password")
+	post(t, ts, "/cart/items", cartapi.AddItemRequest{ProductID: productID, Quantity: 2}, token, http.StatusOK, nil)
+	// cart total = 200.00
+
+	maxDiscount, _ := money.NewAmount("INR", 3000, cartmodels.InrScale) // cap at 30.00
+
+	// coupon applies 20% discount; 20% of 200.00 = 40.00 but capped at 30.00
+	{
+		err := ts.CouponStore.CreateCoupon(&cartmodels.Coupon{
+			Name:               "SAVE20",
+			DiscountPercentage: decimal.MustParse("0.20"),
+			MaxDiscount:        maxDiscount,
+		})
+		if err != nil {
+			t.Fatalf("create coupon: %v", err)
+		}
+
+		resp := &cartapi.GetCartTotalResponse{}
+		get(t, ts, "/cart?coupon=SAVE20", token, http.StatusOK, resp)
+
+		if resp.GetTotal() != "170.00" {
+			t.Fatalf("expected total %q after coupon, got %q", "170.00", resp.GetTotal())
+		}
+		if resp.GetDiscount() != "30.00" {
+			t.Fatalf("expected discount %q (capped at max), got %q", "30.00", resp.GetDiscount())
+		}
+	}
+
+	// coupon applies 5% discount; 5% of 200.00 = 10.00, under the 30.00 cap
+	{
+		err := ts.CouponStore.CreateCoupon(&cartmodels.Coupon{
+			Name:               "SAVE5",
+			DiscountPercentage: decimal.MustParse("0.05"),
+			MaxDiscount:        maxDiscount,
+		})
+		if err != nil {
+			t.Fatalf("create coupon: %v", err)
+		}
+
+		resp := &cartapi.GetCartTotalResponse{}
+		get(t, ts, "/cart?coupon=SAVE5", token, http.StatusOK, resp)
+
+		if resp.GetTotal() != "190.00" {
+			t.Fatalf("expected total %q after coupon, got %q", "190.00", resp.GetTotal())
+		}
+		if resp.GetDiscount() != "10.00" {
+			t.Fatalf("expected discount %q, got %q", "10.00", resp.GetDiscount())
+		}
+	}
+
+	// invalid coupon name returns 404
+	{
+		get(t, ts, "/cart?coupon=NOSUCHCOUPON", token, http.StatusNotFound, nil)
+	}
+
+	// no coupon — discount field absent from response
+	{
+		resp := &cartapi.GetCartTotalResponse{}
+		get(t, ts, "/cart", token, http.StatusOK, resp)
+
+		if resp.GetTotal() != "200.00" {
+			t.Fatalf("expected total %q without coupon, got %q", "200.00", resp.GetTotal())
+		}
+		if resp.GetDiscount() != "" {
+			t.Fatalf("expected no discount field without coupon, got %q", resp.GetDiscount())
+		}
 	}
 }
 

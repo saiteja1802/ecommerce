@@ -8,6 +8,7 @@ import (
 	"github.com/govalues/money"
 	cartapi "github.com/saiteja/ecommerce/cart/api_models"
 	cartdao "github.com/saiteja/ecommerce/cart/dao"
+	cartmodels "github.com/saiteja/ecommerce/cart/models"
 	"github.com/saiteja/ecommerce/pkg/logger"
 	"github.com/saiteja/ecommerce/product"
 	productapi "github.com/saiteja/ecommerce/product/api_models"
@@ -16,18 +17,21 @@ import (
 var (
 	ErrInvalidQuantity   = errors.New("quantity must be at least 1")
 	ErrInsufficientStock = errors.New("insufficient stock")
-	ErrItemNotFound      = cartdao.ErrItemNotFound
+	ErrItemNotFound      = errors.New("item not found")
 	ErrProductNotFound   = errors.New("product not found")
+	ErrCouponNotFound    = errors.New("coupon not found")
 )
 
 type Service struct {
 	cartDAO        cartdao.CartDAO
+	couponDAO      cartdao.CouponDAO
 	productService *product.Service
 }
 
-func NewService(cartDAO cartdao.CartDAO, productService *product.Service) *Service {
+func NewService(cartDAO cartdao.CartDAO, couponDAO cartdao.CouponDAO, productService *product.Service) *Service {
 	return &Service{
 		cartDAO:        cartDAO,
+		couponDAO:      couponDAO,
 		productService: productService,
 	}
 }
@@ -43,6 +47,7 @@ func (s *Service) AddItem(ctx context.Context, req *cartapi.AddItemRequest) (*ca
 		return nil, ErrProductNotFound
 	}
 	if err != nil {
+		logger.L.Error("failed to get inventory", "productID", req.GetProductID(), "error", err)
 		return nil, err
 	}
 
@@ -135,6 +140,7 @@ func (s *Service) UpdateQuantity(ctx context.Context, req *cartapi.UpdateQuantit
 
 	inv, err := s.productService.GetInventory(ctx, &productapi.GetInventoryRequest{ProductID: req.GetProductID()})
 	if err != nil {
+		logger.L.Error("failed to get inventory", "productID", req.GetProductID(), "error", err)
 		return nil, err
 	}
 	if inv.GetQuantity() < req.GetQuantity() {
@@ -153,20 +159,67 @@ func (s *Service) UpdateQuantity(ctx context.Context, req *cartapi.UpdateQuantit
 	return &cartapi.UpdateQuantityResponse{Items: items, Total: total}, nil
 }
 
-// GetTotal computes the cart total using money.Amount arithmetic to avoid
-// floating-point accumulation errors.
-func (s *Service) GetTotal(ctx context.Context, req *cartapi.GetCartTotalRequest) (*cartapi.CartTotalResponse, error) {
-	items, total, err := s.computeTotal(ctx, req.GetUserID())
+// GetCartTotal computes the cart total. If a coupon name is provided, the
+// discount is computed and subtracted; both the final total and the discount
+// are returned separately in the response.
+func (s *Service) GetCartTotal(ctx context.Context, req *cartapi.GetCartTotalRequest) (*cartapi.GetCartTotalResponse, error) {
+	items, rawTotal, err := s.computeTotal(ctx, req.GetUserID())
 	if err != nil {
 		return nil, err
 	}
-	return &cartapi.CartTotalResponse{Items: items, Total: total}, nil
+
+	if req.GetCouponName() == "" {
+		return &cartapi.GetCartTotalResponse{Items: items, Total: rawTotal}, nil
+	}
+
+	coupon, err := s.couponDAO.GetCoupon(req.GetCouponName())
+	if errors.Is(err, cartdao.ErrCouponNotFound) {
+		return nil, ErrCouponNotFound
+	}
+	if err != nil {
+		logger.L.Error("failed to get coupon", "coupon", req.GetCouponName(), "error", err)
+		return nil, err
+	}
+
+	totalAmt, err := money.ParseAmount("INR", rawTotal)
+	if err != nil {
+		logger.L.Error("failed to parse cart total", "error", err)
+		return nil, err
+	}
+
+	discount, err := totalAmt.Mul(coupon.GetDiscountPercentage())
+	if err != nil {
+		logger.L.Error("failed to compute discount", "error", err)
+		return nil, err
+	}
+	discount = discount.Round(cartmodels.InrScale)
+
+	cmp, err := discount.Cmp(coupon.GetMaxDiscount())
+	if err != nil {
+		logger.L.Error("failed to compare discount to max discount", "error", err)
+		return nil, err
+	}
+	if cmp > 0 {
+		discount = coupon.GetMaxDiscount()
+	}
+
+	finalTotal, err := totalAmt.Sub(discount)
+	if err != nil {
+		logger.L.Error("failed to subtract discount", "error", err)
+		return nil, err
+	}
+
+	return &cartapi.GetCartTotalResponse{
+		Items:    items,
+		Total:    finalTotal.Decimal().String(),
+		Discount: discount.Decimal().String(),
+	}, nil
 }
 
 func (s *Service) computeTotal(ctx context.Context, userID string) ([]*cartapi.CartItemSummary, string, error) {
 	cart, err := s.cartDAO.GetCart(userID)
 	if errors.Is(err, cartdao.ErrCartNotFound) {
-		zero, _ := money.NewAmount("INR", 0, 2)
+		zero, _ := money.NewAmount("INR", 0, cartmodels.InrScale)
 		return []*cartapi.CartItemSummary{}, zero.Decimal().String(), nil
 	}
 	if err != nil {
@@ -174,7 +227,7 @@ func (s *Service) computeTotal(ctx context.Context, userID string) ([]*cartapi.C
 		return nil, "", err
 	}
 
-	total, _ := money.NewAmount("INR", 0, 2)
+	total, _ := money.NewAmount("INR", 0, cartmodels.InrScale)
 	summaries := make([]*cartapi.CartItemSummary, 0, len(cart.GetItems()))
 
 	for _, item := range cart.GetItems() {
@@ -183,6 +236,7 @@ func (s *Service) computeTotal(ctx context.Context, userID string) ([]*cartapi.C
 			return nil, "", ErrProductNotFound
 		}
 		if err != nil {
+			logger.L.Error("failed to get product details", "productID", item.GetProductID(), "error", err)
 			return nil, "", err
 		}
 
@@ -216,4 +270,3 @@ func (s *Service) computeTotal(ctx context.Context, userID string) ([]*cartapi.C
 
 	return summaries, total.Decimal().String(), nil
 }
-
