@@ -30,8 +30,9 @@ func startServer(t *testing.T) (*testServer, func()) {
 	sessionStore := authdao.NewInMemorySessionStore()
 	authService := auth.NewService(credentialsStore, sessionStore)
 	productService := product.NewService(productStore, inventoryStore)
-	cartService := cart.NewService(cartdao.NewInMemoryCartStore(), productService)
-	appServer := httpserver.New(authService, productService, cartService, productStore, inventoryStore)
+	couponStore := cartdao.NewInMemoryCouponStore()
+	cartService := cart.NewService(cartdao.NewInMemoryCartStore(), couponStore, productService)
+	appServer := httpserver.New(authService, productService, cartService, productStore, inventoryStore, couponStore)
 	ts := &testServer{
 		Server: appServer,
 		HTTP:   httptest.NewServer(appServer),

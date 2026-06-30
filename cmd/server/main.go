@@ -23,9 +23,10 @@ func main() {
 	productService := product.NewService(productStore, inventoryStore)
 
 	cartStore := cartdao.NewInMemoryCartStore()
-	cartService := cart.NewService(cartStore, productService)
+	couponStore := cartdao.NewInMemoryCouponStore()
+	cartService := cart.NewService(cartStore, couponStore, productService)
 
-	s := httpserver.New(authService, productService, cartService, productStore, inventoryStore)
+	s := httpserver.New(authService, productService, cartService, productStore, inventoryStore, couponStore)
 
 	logger.L.Info("server started", "addr", ":8080")
 	if err := http.ListenAndServe(":8080", s); err != nil {

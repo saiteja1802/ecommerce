@@ -131,12 +131,20 @@ func (r *UpdateQuantityResponse) GetTotal() string {
 }
 
 type GetCartTotalRequest struct {
-	UserID string
+	UserID     string
+	CouponName string
 }
 
 func (r *GetCartTotalRequest) GetUserID() string {
 	if r != nil {
 		return r.UserID
+	}
+	return ""
+}
+
+func (r *GetCartTotalRequest) GetCouponName() string {
+	if r != nil {
+		return r.CouponName
 	}
 	return ""
 }
@@ -184,21 +192,29 @@ func (r *CartItemSummary) GetSubtotal() string {
 	return ""
 }
 
-type CartTotalResponse struct {
-	Items []*CartItemSummary `json:"items"`
-	Total string             `json:"total"`
+type GetCartTotalResponse struct {
+	Items    []*CartItemSummary `json:"items"`
+	Total    string             `json:"total"`
+	Discount string             `json:"discount,omitempty"`
 }
 
-func (r *CartTotalResponse) GetItems() []*CartItemSummary {
+func (r *GetCartTotalResponse) GetItems() []*CartItemSummary {
 	if r != nil {
 		return r.Items
 	}
 	return nil
 }
 
-func (r *CartTotalResponse) GetTotal() string {
+func (r *GetCartTotalResponse) GetTotal() string {
 	if r != nil {
 		return r.Total
+	}
+	return ""
+}
+
+func (r *GetCartTotalResponse) GetDiscount() string {
+	if r != nil {
+		return r.Discount
 	}
 	return ""
 }
