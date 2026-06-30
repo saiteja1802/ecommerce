@@ -4,37 +4,65 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/saiteja/ecommerce/auth"
 	authapi "github.com/saiteja/ecommerce/auth/api_models"
 	"github.com/saiteja/ecommerce/pkg/logger"
+	"github.com/saiteja/ecommerce/product"
+	productapi "github.com/saiteja/ecommerce/product/api_models"
+	productdao "github.com/saiteja/ecommerce/product/dao"
 )
 
 type Server struct {
-	auth *auth.Service
-	mux  *http.ServeMux
+	auth           *auth.Service
+	product        *product.Service
+	mux            *http.ServeMux
+	ProductStore   *productdao.InMemoryProductStore
+	InventoryStore *productdao.InMemoryInventoryStore
 }
 
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func New(authService *auth.Service) *Server {
+func New(authService *auth.Service, productService *product.Service, productStore *productdao.InMemoryProductStore, inventoryStore *productdao.InMemoryInventoryStore) *Server {
 	logger.Init()
 	s := &Server{
-		auth: authService,
-		mux:  http.NewServeMux(),
+		auth:           authService,
+		product:        productService,
+		mux:            http.NewServeMux(),
+		ProductStore:   productStore,
+		InventoryStore: inventoryStore,
 	}
 
 	s.mux.HandleFunc("POST /signup", s.handleSignup)
 	s.mux.HandleFunc("POST /login", s.handleLogin)
 	s.mux.HandleFunc("POST /authenticate", s.handleAuthenticate)
+	s.mux.HandleFunc("GET /products", s.handleGetProducts)
+	s.mux.HandleFunc("GET /products/{id}", s.handleGetProductDetails)
+	s.mux.HandleFunc("GET /products/{id}/inventory", s.handleGetProductInventory)
 
 	return s
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
+}
+
+// authenticate extracts and validates the Bearer token, returning the userID.
+func (s *Server) authenticate(r *http.Request) (string, error) {
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return "", auth.ErrInvalidToken
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	resp, err := s.auth.Authenticate(r.Context(), &authapi.AuthenticateRequest{Token: token})
+	if err != nil {
+		return "", err
+	}
+	return resp.GetUserID(), nil
 }
 
 func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +113,61 @@ func (s *Server) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) handleGetProductDetails(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authenticate(r); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	resp, err := s.product.GetProductDetails(r.Context(), &productapi.GetProductDetailsRequest{
+		ProductID: r.PathValue("id"),
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleGetProductInventory(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authenticate(r); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	resp, err := s.product.GetInventory(r.Context(), &productapi.GetInventoryRequest{
+		ProductID: r.PathValue("id"),
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleGetProducts(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authenticate(r); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+
+	resp, err := s.product.GetProductsCatalog(r.Context(), &productapi.GetProductsCatalogRequest{
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(dst)
@@ -113,10 +196,10 @@ func statusCodeForError(err error) (int, string) {
 		return http.StatusConflict, err.Error()
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		return http.StatusUnauthorized, err.Error()
-	case errors.Is(err, auth.ErrInvalidToken):
+	case errors.Is(err, auth.ErrInvalidToken), errors.Is(err, auth.ErrSessionExpired):
 		return http.StatusUnauthorized, err.Error()
-	case errors.Is(err, auth.ErrSessionExpired):
-		return http.StatusUnauthorized, err.Error()
+	case errors.Is(err, product.ErrProductNotFound):
+		return http.StatusNotFound, err.Error()
 	default:
 		return http.StatusInternalServerError, "internal server error"
 	}
